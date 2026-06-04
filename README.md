@@ -1,4 +1,4 @@
-https://github.com/MioruRin/DolbyVisionPayloadEditor
+https://github.com/MioruRin/DolbyVisionPayloadEditor/blob/master/DolbyVision_EDID_Guide.md
 # DolbyVisionPayloadEditor
 
 A universal Windows tool to modify Dolby Vision VSDB in any monitor's EDID, enabling Dolby Vision PC mode on displays that support it hardware-wise but have it disabled by the manufacturer.
