@@ -14,6 +14,8 @@ Usage:
 
 import sys
 import os
+import json
+import base64
 import struct
 import subprocess
 import ctypes
@@ -237,6 +239,66 @@ def export_bin(edid: bytes, name: str) -> Path:
     return p
 
 
+def admin_write_mode(json_file):
+    """
+    Called when relaunched with --admin-write <json_file>.
+    Loads state from temp JSON, writes EDID to registry, then exits.
+    """
+    import json, base64, os
+    try:
+        with open(json_file, "r") as f:
+            data = json.load(f)
+
+        reg_path = data["reg_path"]
+        original_edid = base64.b64decode(data["original_edid"])
+        modified_edid = base64.b64decode(data["modified_edid"])
+        model = data.get("model", "unknown")
+
+        # Backup original EDID
+        bak = backup_edid(original_edid, model)
+        print(f"[OK] Backup saved: {bak}")
+
+        # Write modified EDID to registry
+        ok = write_reg_binary(reg_path, "EDID", modified_edid)
+
+        if ok:
+            print(f"[OK] EDID written to registry successfully.")
+            print(f"      Backup: {bak}")
+            # Try to trigger PnP re-enumeration so Windows re-reads EDID
+            try:
+                import ctypes
+                # Send WM_SETTINGCHANGE broadcast to notify display config change
+                ctypes.windll.user32.SendNotifyMessageW(
+                    0xFFFF,  # HWND_BROADCAST
+                    0x001A,  # WM_SETTINGCHANGE
+                    0,
+                    0
+                )
+                print("[OK] Sent display config change notification.")
+            except Exception as e2:
+                print(f"[!] Could not send notification: {e2}")
+            print("[*] ACTION REQUIRED:")
+            print("    Re-plug the display cable (HDMI/DP), OR")
+            print("    Go to Device Manager ─ Display adapters ─ right-click ─ Disable, then Enable.")
+        else:
+            print("[ERR] Failed to write EDID to registry.")
+
+        # Clean up temp file
+        try:
+            os.unlink(json_file)
+            print(f"[OK] Temp file removed: {json_file}")
+        except Exception as e3:
+            print(f"[!] Could not remove temp file: {e3}")
+
+    except Exception as e:
+        print(f"[ERR] Admin write mode failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+    input("\nPress Enter to exit...")
+    sys.exit(0)
+
+
 # ─── GUI ───────────────────────────────────────────────────────────────
 
 def launch_gui():
@@ -413,14 +475,50 @@ def launch_gui():
             messagebox.showwarning("Warning", "Apply changes first.")
             return
         if not is_admin():
-            if messagebox.askyesno("UAC Required", "Admin required to write registry.\nRelaunch as admin?"):
+            # Save state to temp JSON, then relaunch with --admin-write
+            import json, base64, tempfile
+            temp_dir = tempfile.gettempdir()
+            json_file = os.path.join(temp_dir, "dv_editor_admin_write.json")
+            data = {
+                "reg_path": state["current_reg"],
+                "original_edid": base64.b64encode(state["original_edid"]).decode("ascii"),
+                "modified_edid": base64.b64encode(bytes(state["current_edid"])).decode("ascii"),
+                "model": state["monitors"][state["sel_idx"]]["model"]
+            }
+            with open(json_file, "w") as f:
+                json.dump(data, f)
+            log(f"[*] State saved to: {json_file}")
+            log("[*] Relaunching as admin...")
+            if messagebox.askyesno("UAC Required",
+                f"Admin required to write registry.\n\nRelaunch as admin and auto-write?\n\nTemp file: ...{os.path.basename(json_file)}"):
+                sys.argv.append(f"--admin-write={json_file}")
                 run_as_admin()
             return
+
+        # --- Admin path: write directly ---
         bak = backup_edid(state["original_edid"], state["monitors"][state["sel_idx"]]["model"])
         ok = write_reg_binary(state["current_reg"], "EDID", bytes(state["current_edid"]))
         if ok:
             log(f"[OK] Written to registry. Backup: {bak}")
-            messagebox.showinfo("Success", "EDID written to registry.\nRe-plug display cable or run Restart64.exe")
+            # Try to trigger PnP re-enumeration so Windows re-reads EDID
+            try:
+                ctypes.windll.user32.SendNotifyMessageW(
+                    0xFFFF,   # HWND_BROADCAST
+                    0x001A,  # WM_SETTINGCHANGE
+                    0,
+                    0
+                )
+                log("[OK] Sent WM_SETTINGCHANGE broadcast.")
+            except Exception as e2:
+                log(f"[!] Could not send notify: {e2}")
+            messagebox.showinfo(
+                "Success",
+                "EDID written to registry successfully!\n\n"
+                "To apply changes, do ONE of:\n"
+                "  1. Unplug & re-plug display cable (HDMI/DP)\n"
+                "  2. Disable + re-enable display in Device Manager\n"
+                "  3. Restart computer"
+            )
         else:
             log("[ERR] Write failed. Check admin permissions.")
             messagebox.showerror("Error", "Write failed.")
@@ -489,6 +587,7 @@ def cmd_read():
 
 
 def cmd_patch():
+    """Auto-enable DV PC mode (flip bit 0), with admin auto-write"""
     monitors = list_monitors()
     target = None
     for m in monitors:
@@ -507,19 +606,51 @@ def cmd_patch():
     print(f"Monitor: {target['model']}")
     print(f"Capability: 0x{old_cap:02X} -> 0x{new_cap:02X}")
     print(f"Bit 0 (DV over HDMI): {old_cap & 1} -> {new_cap & 1}")
+    print()
+
+    # Patch in memory first (needed for both paths)
+    edid_new, _, _ = patch_capability(edid, new_cap)
 
     if not is_admin():
-        print("[!] Admin required. Relaunching with UAC...")
+        # Save state to temp JSON, then relaunch with --admin-write
+        import json, base64, tempfile
+        temp_dir = tempfile.gettempdir()
+        json_file = os.path.join(temp_dir, "dv_editor_admin_write.json")
+        data = {
+            "reg_path": target["reg_path"],
+            "original_edid": base64.b64encode(target["edid"]).decode("ascii"),
+            "modified_edid": base64.b64encode(bytes(edid_new)).decode("ascii"),
+            "model": target["model"]
+        }
+        with open(json_file, "w") as f:
+            json.dump(data, f)
+        print(f"[*] Not admin. Saving state to: {json_file}")
+        print("[*] Relaunching as admin...")
+        sys.argv.append(f"--admin-write={json_file}")
         run_as_admin()
         return
 
+    # Admin path: write directly
     bak = backup_edid(target["edid"], target["model"])
     print(f"Backup: {bak}")
 
-    edid_new, _, _ = patch_capability(edid, new_cap)
     ok = write_reg_binary(target["reg_path"], "EDID", bytes(edid_new))
     if ok:
-        print("[OK] Written to registry. Re-plug display or run Restart64.exe.")
+        print("[OK] Written to registry.")
+        # Try to trigger PnP re-enumeration
+        try:
+            ctypes.windll.user32.SendNotifyMessageW(
+                0xFFFF,   # HWND_BROADCAST
+                0x001A,  # WM_SETTINGCHANGE
+                0,
+                0
+            )
+            print("[OK] Sent WM_SETTINGCHANGE broadcast.")
+        except Exception as e2:
+            print(f"[!] Could not send notify: {e2}")
+        print("[*] ACTION REQUIRED:")
+        print("    Re-plug the display cable (HDMI/DP), OR")
+        print("    Go to Device Manager -> Display adapters -> Disable, then Enable.")
     else:
         print("[ERR] Write failed.")
 
@@ -565,8 +696,14 @@ def main():
     parser.add_argument("--patch",  action="store_true")
     parser.add_argument("--export", action="store_true")
     parser.add_argument("--cli",    action="store_true", help="Force CLI mode")
+    parser.add_argument("--admin-write", metavar="FILE", help="Admin write mode (internal use)")
 
     args = parser.parse_args()
+
+    # --admin-write: called from admin-relaunched process, does the actual registry write
+    if args.admin_write:
+        admin_write_mode(args.admin_write)
+        return
 
     if args.list:
         cmd_list()
@@ -581,8 +718,22 @@ def main():
         try:
             launch_gui()
         except Exception as e:
+            import traceback
+            detail = traceback.format_exc()
             print(f"[!] GUI failed: {e}")
-            print("    Try: DV_Payload_Editor.exe --list")
+            print(detail)
+            print("    Try: DolbyVisionPayloadEditor.exe --list")
+            # Show error dialog even in windowed mode
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror("DolbyVisionPayloadEditor Error",
+                    f"GUI failed to start:\n\n{e}\n\nTry running with --list first.\n\n{detail}")
+                root.destroy()
+            except:
+                pass
 
 
 if __name__ == "__main__":
