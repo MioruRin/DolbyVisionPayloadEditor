@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DV Payload Editor — Dolby Vision EDID 通用修改工具
+DolbyVisionPayloadEditor — Dolby Vision EDID 通用修改工具
 Universal tool to modify Dolby Vision VSDB in any monitor's EDID.
 
 Usage:
-  DV_Payload_Editor.exe                  # Launch GUI
-  DV_Payload_Editor.exe --list          # List all monitors
-  DV_Payload_Editor.exe --read          # Read DV Payload
-  DV_Payload_Editor.exe --patch         # Auto patch (flip bit 0)
-  DV_Payload_Editor.exe --export        # Export patched EDID as .bin (for CRU)
+  DolbyVisionPayloadEditor.exe                  # Launch GUI
+  DolbyVisionPayloadEditor.exe --list          # List all monitors
+  DolbyVisionPayloadEditor.exe --read          # Read DV Payload
+  DolbyVisionPayloadEditor.exe --patch         # Auto patch (flip bit 0)
+  DolbyVisionPayloadEditor.exe --export        # Export patched EDID as .bin (for CRU)
 """
 
 import sys
 import os
+import json
+import base64
 import struct
 import subprocess
 import ctypes
@@ -39,7 +41,7 @@ HKLM = 0x80000002
 # Dolby IEEE OUI: 0x000D046 stored as little-endian: 46 D0 00
 DOLBY_OUI_LE = bytes([0x46, 0xD0, 0x00])
 
-# ─── DV Capability bit definitions ───────────────────────────────────────
+# ─── DV Capability bit definitions ───────────────────────────────────────────────
 DV_BITS = [
     ("Bit 0: DV over HDMI",       "Standard HDMI Dolby Vision signaling (PC mode key)"),
     ("Bit 1: DV over MHL",        "MHL interface Dolby Vision"),
@@ -59,19 +61,19 @@ def is_admin():
     except Exception:
         return False
 
-
-def run_as_admin():
+def run_as_admin(extra_args=None):
     """Relaunch current process as admin via UAC"""
-    params = " ".join(f'"{a}"' if " " in a else a for a in sys.argv)
+    params = " ".join(f'"{a}"' if ' ' in a else a for a in sys.argv)
+    if extra_args:
+        params += " " + " ".join(f'"{a}"' if ' ' in a else a for a in extra_args)
     if IS_FROZEN:
         exe = sys.executable
     else:
-        exe = sys.executable + " " + '"' + str(Path(__file__).resolve()) + '"'
+        exe = sys.executable + ' "' + str(Path(__file__).resolve()) + '"'
     ctypes.windll.shell32.ShellExecuteW(
         None, "runas", exe, params, str(APP_DIR), 1
     )
     sys.exit(0)
-
 
 def read_reg_binary(path, value_name):
     """Read REG_BINARY from registry"""
@@ -83,7 +85,6 @@ def read_reg_binary(path, value_name):
     except Exception as e:
         return None
 
-
 def write_reg_binary(path, value_name, data: bytes):
     """Write REG_BINARY to registry (requires admin)"""
     try:
@@ -92,7 +93,6 @@ def write_reg_binary(path, value_name, data: bytes):
         winreg.CloseKey(key)
         return True
     except Exception as e:
-        # Try opening with ALL_ACCESS
         try:
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0, winreg.KEY_ALL_ACCESS)
             winreg.SetValueEx(key, value_name, 0, winreg.REG_BINARY, data)
@@ -100,7 +100,6 @@ def write_reg_binary(path, value_name, data: bytes):
             return True
         except Exception as e2:
             return False
-
 
 def find_dolby_vsdb(edid: bytes):
     """
@@ -153,7 +152,6 @@ def find_dolby_vsdb(edid: bytes):
 
     return None
 
-
 def parse_dv_payload(payload: bytes):
     """Parse 7-byte DV VSDB Payload, return dict or None"""
     if len(payload) < 7:
@@ -166,7 +164,6 @@ def parse_dv_payload(payload: bytes):
         "cap_bin": f"{cap:08b}",
         "bits": [bool(cap & (1 << b)) for b in range(8)],
     }
-
 
 def patch_capability(edid: bytearray, new_cap: int):
     """
@@ -188,7 +185,6 @@ def patch_capability(edid: bytearray, new_cap: int):
     edid[cs_offset] = new_cs
 
     return edid, old_cap, new_cap
-
 
 def list_monitors():
     """Enumerate all monitors with EDID from registry"""
@@ -219,14 +215,12 @@ def list_monitors():
         pass
     return monitors
 
-
 def backup_edid(edid: bytes, name: str) -> Path:
     """Backup EDID to temp directory"""
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     p = Path(tempfile.gettempdir()) / f"DV_Editor_backup_{name}_{ts}.bin"
     p.write_bytes(edid)
     return p
-
 
 def export_bin(edid: bytes, name: str) -> Path:
     """Export EDID as .bin to Desktop"""
@@ -235,6 +229,82 @@ def export_bin(edid: bytes, name: str) -> Path:
     p = desktop / f"{name}_DV_{ts}.bin"
     p.write_bytes(edid)
     return p
+
+def admin_write_mode(json_file):
+    """
+    Called when relaunched with --admin-write <json_file>.
+    Loads state from temp JSON, writes EDID to registry, shows GUI messagebox, then exits.
+    """
+    import tkinter as tk
+    from tkinter import messagebox
+
+    root = tk.Tk()
+    root.withdraw()
+
+    try:
+        with open(json_file, "r") as f:
+            data = json.load(f)
+
+        reg_path = data["reg_path"]
+        original_edid = base64.b64decode(data["original_edid"])
+        modified_edid = base64.b64decode(data["modified_edid"])
+        model = data.get("model", "unknown")
+
+        # Backup original EDID
+        bak = backup_edid(original_edid, model)
+
+        # Write modified EDID to registry
+        ok = write_reg_binary(reg_path, "EDID", modified_edid)
+
+        if ok:
+            # Try to trigger PnP re-enumeration so Windows re-reads EDID
+            try:
+                ctypes.windll.user32.SendNotifyMessageW(
+                    0xFFFF,   # HWND_BROADCAST
+                    0x001A,  # WM_SETTINGCHANGE
+                    0,
+                    0
+                )
+            except Exception as e2:
+                pass
+
+            msg = (
+                f"EDID written to registry successfully!\n\n"
+                f"Backup saved to:\n{bak}\n\n"
+                f"To apply changes, do ONE of:\n"
+                f"  1. Unplug & re-plug display cable (HDMI/DP)\n"
+                f"  2. Device Manager → Display adapters → right-click → Disable, then Enable\n"
+                f"  3. Restart computer"
+            )
+            messagebox.showinfo("DolbyVisionPayloadEditor – Success", msg)
+        else:
+            msg = (
+                f"Failed to write EDID to registry.\n\n"
+                f"Try running as administrator manually."
+            )
+            messagebox.showerror("DolbyVisionPayloadEditor – Error", msg)
+
+        # Clean up temp file
+        try:
+            os.unlink(json_file)
+        except Exception:
+            pass
+
+    except Exception as e:
+        msg = f"Admin write mode failed:\n\n{str(e)}"
+        try:
+            import traceback
+            msg += f"\n\n{traceback.format_exc()[:500]}"
+        except Exception:
+            pass
+        messagebox.showerror("DolbyVisionPayloadEditor – Error", msg)
+
+    finally:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
 
 
 # ─── GUI ───────────────────────────────────────────────────────────────
@@ -255,7 +325,7 @@ def launch_gui():
     }
 
     root = tk.Tk()
-    root.title("DV Payload Editor - Dolby Vision EDID Tool")
+    root.title("DolbyVisionPayloadEditor – Dolby Vision EDID Tool")
     root.geometry("780x720")
     root.minsize(600, 500)
 
@@ -274,7 +344,7 @@ def launch_gui():
     if is_admin():
         lbl_admin.config(text="[Admin]", foreground="green")
     else:
-        lbl_admin.config(text="[Non-Admin - write needs UAC]", foreground="orange")
+        lbl_admin.config(text="[Non-Admin – write needs UAC]", foreground="orange")
 
     # ── Section 2: DV Capability Editor ──
     sec2 = ttk.LabelFrame(root, text="  2. DV Capability Editor  ", padding=8)
@@ -412,15 +482,46 @@ def launch_gui():
         if not state["applied"]:
             messagebox.showwarning("Warning", "Apply changes first.")
             return
+
         if not is_admin():
-            if messagebox.askyesno("UAC Required", "Admin required to write registry.\nRelaunch as admin?"):
-                run_as_admin()
+            # Save state to temp JSON, then relaunch with --admin-write
+            temp_dir = tempfile.gettempdir()
+            json_file = os.path.join(temp_dir, "dv_editor_admin_write.json")
+            data = {
+                "reg_path": state["current_reg"],
+                "original_edid": base64.b64encode(state["original_edid"]).decode("ascii"),
+                "modified_edid": base64.b64encode(bytes(state["current_edid"])).decode("ascii"),
+                "model": state["monitors"][state["sel_idx"]]["model"]
+            }
+            with open(json_file, "w") as f:
+                json.dump(data, f)
+            log(f"[*] Not admin. State saved to: ...{os.path.basename(json_file)}")
+            log("[*] Relaunching as admin...")
+            run_as_admin([f"--admin-write={json_file}"])
+            # run_as_admin calls sys.exit(), so we don't reach here
             return
+
+        # --- Admin path: write directly ---
         bak = backup_edid(state["original_edid"], state["monitors"][state["sel_idx"]]["model"])
         ok = write_reg_binary(state["current_reg"], "EDID", bytes(state["current_edid"]))
         if ok:
             log(f"[OK] Written to registry. Backup: {bak}")
-            messagebox.showinfo("Success", "EDID written to registry.\nRe-plug display cable or run Restart64.exe")
+            # Try to trigger PnP re-enumeration
+            try:
+                ctypes.windll.user32.SendNotifyMessageW(
+                    0xFFFF, 0x001A, 0, 0
+                )
+                log("[OK] Sent WM_SETTINGCHANGE broadcast.")
+            except Exception as e2:
+                log(f"[!] Could not send notify: {e2}")
+            messagebox.showinfo(
+                "Success",
+                "EDID written to registry successfully!\n\n"
+                "To apply changes, do ONE of:\n"
+                "  1. Unplug & re-plug display cable (HDMI/DP)\n"
+                "  2. Device Manager → Display adapters → right-click → Disable, then Enable\n"
+                "  3. Restart computer"
+            )
         else:
             log("[ERR] Write failed. Check admin permissions.")
             messagebox.showerror("Error", "Write failed.")
@@ -430,10 +531,7 @@ def launch_gui():
             messagebox.showwarning("Warning", "Select a monitor first.")
             return
         dst = filedialog.asksaveasfilename(
-            defaultextension=".bin",
-            filetypes=[("EDID Binary", "*.bin")],
-            initialfile=f"DV_edid_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bin",
-        )
+            )
         if dst:
             p = Path(dst)
             if state["applied"]:
@@ -465,7 +563,6 @@ def cmd_list():
         print(f"    DV VSDB: {'Yes' if m['has_dv'] else 'No'}")
     print(f"\nTotal: {len(monitors)} monitor(s)")
 
-
 def cmd_read():
     monitors = list_monitors()
     target = None
@@ -487,8 +584,8 @@ def cmd_read():
         s = "ON" if parsed["bits"][i] else "OFF"
         print(f"  [{i}] {name}: {s}")
 
-
 def cmd_patch():
+    """Auto-enable DV PC mode (flip bit 0), with admin auto-write"""
     monitors = list_monitors()
     target = None
     for m in monitors:
@@ -507,22 +604,50 @@ def cmd_patch():
     print(f"Monitor: {target['model']}")
     print(f"Capability: 0x{old_cap:02X} -> 0x{new_cap:02X}")
     print(f"Bit 0 (DV over HDMI): {old_cap & 1} -> {new_cap & 1}")
+    print()
+
+    # Patch in memory first
+    edid_new, _, _ = patch_capability(edid, new_cap)
 
     if not is_admin():
-        print("[!] Admin required. Relaunching with UAC...")
-        run_as_admin()
+        # Save state to temp JSON, then relaunch with --admin-write
+        import json, base64, tempfile
+        temp_dir = tempfile.gettempdir()
+        json_file = os.path.join(temp_dir, "dv_editor_admin_write.json")
+        data = {
+            "reg_path": target["reg_path"],
+            "original_edid": base64.b64encode(target["edid"]).decode("ascii"),
+            "modified_edid": base64.b64encode(bytes(edid_new)).decode("ascii"),
+            "model": target["model"]
+        }
+        with open(json_file, "w") as f:
+            json.dump(data, f)
+        print(f"[*] Not admin. State saved to: {json_file}")
+        print("[*] Relaunching as admin...")
+        run_as_admin([f"--admin-write={json_file}"])
+        # run_as_admin calls sys.exit(), so we don't reach here
         return
 
+    # Admin path: patch and write directly
     bak = backup_edid(target["edid"], target["model"])
     print(f"Backup: {bak}")
 
-    edid_new, _, _ = patch_capability(edid, new_cap)
     ok = write_reg_binary(target["reg_path"], "EDID", bytes(edid_new))
     if ok:
-        print("[OK] Written to registry. Re-plug display or run Restart64.exe.")
+        print("[OK] Written to registry.")
+        # Try to trigger PnP re-enumeration
+        try:
+            ctypes.windll.user32.SendNotifyMessageW(
+                0xFFFF, 0x001A, 0, 0
+            )
+            print("[OK] Sent WM_SETTINGCHANGE broadcast.")
+        except Exception as e2:
+            print(f"[!] Could not send notify: {e2}")
+        print("[*] ACTION REQUIRED:")
+        print("    Re-plug the display cable (HDMI/DP), OR")
+        print("    Go to Device Manager → Display adapters → right-click → Disable, then Enable.")
     else:
         print("[ERR] Write failed.")
-
 
 def cmd_export():
     """Export patched EDID as .bin for CRU"""
@@ -547,17 +672,17 @@ def cmd_export():
     print("     Import this .bin in CRU, then run Restart64.exe")
 
 
-# ─── Main ──────────────────────────────────────────────────────────────
+# ─── Main ───────────────────────────────────────────────────────────────
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(
-        description="DV Payload Editor - Universal Dolby Vision EDID Tool",
+        description="DolbyVisionPayloadEditor – Universal Dolby Vision EDID Tool",
         epilog="Examples:\n"
-               "  DV_Payload_Editor.exe          # GUI\n"
-               "  DV_Payload_Editor.exe --list    # List monitors\n"
-               "  DV_Payload_Editor.exe --patch   # Auto enable DV PC\n"
-               "  DV_Payload_Editor.exe --export  # Export .bin for CRU",
+               "  DolbyVisionPayloadEditor.exe          # GUI\n"
+               "  DolbyVisionPayloadEditor.exe --list    # List monitors\n"
+               "  DolbyVisionPayloadEditor.exe --patch   # Auto enable DV PC\n"
+               "  DolbyVisionPayloadEditor.exe --export  # Export .bin for CRU",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--list",   action="store_true")
@@ -565,8 +690,15 @@ def main():
     parser.add_argument("--patch",  action="store_true")
     parser.add_argument("--export", action="store_true")
     parser.add_argument("--cli",    action="store_true", help="Force CLI mode")
+    parser.add_argument("--admin-write", metavar="FILE", help="Admin write mode (internal use)")
+    # Hidden flag: if set, skips admin relaunch (used internally)
+    parser.add_argument("--skip-admin-relaunch", action="store_true", help=argparse.SUPPRESS)
 
     args = parser.parse_args()
+
+    # --admin-write: called from admin-relaunched process, does the actual registry write
+    if args.admin_write:
+        admin_write_mode(args.admin_write)
 
     if args.list:
         cmd_list()
@@ -581,8 +713,22 @@ def main():
         try:
             launch_gui()
         except Exception as e:
+            import traceback
+            detail = traceback.format_exc()
             print(f"[!] GUI failed: {e}")
-            print("    Try: DV_Payload_Editor.exe --list")
+            print(detail)
+            print("    Try: DolbyVisionPayloadEditor.exe --list")
+            # Show error dialog even in windowed mode
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror("DolbyVisionPayloadEditor Error",
+                    f"GUI failed to start:\n\n{e}\n\nTry running with --list first.\n\n{detail}")
+                root.destroy()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
