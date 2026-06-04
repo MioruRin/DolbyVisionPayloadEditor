@@ -71,9 +71,9 @@ Dolby Vision 数据位于 CTA-861 扩展块中（Block 1 及之后）：
 | **Bit 0** | **DV over HDMI** | **标准 HDMI 杜比视界信令** | **Windows 杜比视界 PC 模式的关键位。置 1 → 系统认为显示器支持 DV 输入 → 设置→显示→HDR 出现杜比视界开关。置 0 → 厂商省 PC 授权费的手段。** |
 | Bit 1 | DV over MHL | MHL 接口杜比视界 | 通过 MHL（Mobile High-Definition Link）传输 DV，面向移动设备接口，PC HDMI 连接无影响 |
 | Bit 2 | Backlight Control | 背光控制（Local Dimming） | 声明显示器支持通过 DV 元数据控制分区背光，系统可配合面板做更精准的亮度调节 |
-| Bit 3 | Profile 8 | Profile 8（BL+EL） | **最主流的 Profile。** 基础层用 HDR10/HLG 信号，增强层单独传输 DV 元数据。Netflix、Disney+、Apple TV+ 等流媒体主要用此 Profile |
-| Bit 4 | Profile 7 | Profile 7（FEL） | Full Enhancement Layer，传输完整的增强层+基础层两路数据，画质最好但带宽需求最高。4K UHD Blu-ray 使用此 Profile |
-| Bit 5 | Profile 5 | Profile 5（RGB 12-bit 无损） | RGB 12-bit 无压缩模式。只有原生 12-bit 面板的专业监视器（如 Sony BVM）才真正支持，HDMI 2.1 带宽在 4K60 下足够但面板硬件限制，几乎没有消费级内容源 |
+| Bit 3 | Profile 8 | Profile 8（BL+RPU） | 流媒体主流 Profile。基础层为 HDR10（10-bit YUV 4:2:2），增强层仅含 RPU 元数据（MEL），无需额外视频带宽。Netflix、Disney+、Amazon Prime Video 等流媒体主要用此 Profile |
+| Bit 4 | Profile 7 | Profile 7（BL+FEL 双层） | 完整双层结构，增强层含完整 12-bit 视频数据（FEL）。基础层兼容 HDR10。画质最好但带宽需求最高。4K UHD Blu-ray 杜比视界碟使用此 Profile |
+| Bit 5 | Profile 5 | Profile 5（RGB 4:4:4） | RGB 4:4:4 12-bit 无损，无 HDR10 基础层，**不兼容 HDR10**（设备必须原生支持 DV 才能解码）。色彩优于 P8，但带宽需求最高。Apple TV+ 原生杜比内容使用此 Profile（仅 Apple TV 4K 可完整解码） |
 | Bit 6 | Low Latency Dolby Vision | 低延迟杜比视界（LLDV） | 面向游戏场景，开启后牺牲元数据精度（12-bit → 10-bit）换取更低视频处理延迟。画质优先的显示器不建议开启 |
 | Bit 7 | DV Version Report | Dolby Vision 版本报表 | 声明支持通过 VSDB 报告 DV 版本号，驱动/系统据此读取后续版本字段 |
 
@@ -81,13 +81,17 @@ Dolby Vision 数据位于 CTA-861 扩展块中（Block 1 及之后）：
 
 ## 4. Dolby Vision Profiles 对比
 
-| Profile | 信号方式 | 色深 | 带宽需求 | 内容来源 | 受众 |
-|---|---|---|---|---|---|
-| **Profile 5** | RGB 无压缩 | 12-bit 原生 | ~20.2 Gbps @4K60 | 几乎无（仅数字影院母版/归档） | 专业后期 |
-| **Profile 7** | BL + FEL 双层 | 10-bit | 较高 | 4K UHD Blu-ray | 家庭影院 |
-| **Profile 8** | BL + EL（兼容 HDR10） | 10-bit | 适中 | Netflix/Disney+/Apple TV+ | 主流消费者 |
+| Profile | 信号方式 | 色深 | 色彩格式 | 带宽需求 | 向后兼容 HDR10 | 内容来源 | 受众 |
+|---|---|---|---|---|---|---|---|
+| **Profile 5** | BL + RPU（无视频 EL） | 12-bit | RGB 4:4:4（IPTPQ） | 最高 ~20 Gbps @4K60 | **否** | Apple TV+ 原生杜比内容、部分 UHD Blu-ray | Apple TV 4K 用户 |
+| **Profile 7** | BL + FEL 双层（完整 EL） | 12-bit | YUV 4:2:2 | 高 | 是（基础层=HDR10） | 4K UHD Blu-ray 杜比视界碟 | 家庭影院 / 碟机用户 |
+| **Profile 8** | BL + RPU（无视频 EL） | 12-bit 处理 / 10-bit 基础层 | YUV 4:2:2 或 4:2:0 | 适中 | 是（基础层=HDR10） | Netflix、Disney+、Amazon Prime Video 等流媒体 | 主流消费者 |
 
-> **日常使用只需关注 Profile 7 和 Profile 8。** Profile 5 是"专业工具人的 Profile"，没有任何流媒体或光盘内容使用。
+> **P5 vs P8 核心区别**：P5 色彩编码为 RGB 4:4:4（IPTPQ），色彩损失最小，但不兼容 HDR10（设备必须原生支持 DV 才能解码）；P8 色彩编码为 YUV 4:2:2（或 4:2:0），色彩略有损失，但基础层可直接用 HDR10 解码，兼容性更好。
+> 
+> **为什么流媒体不用 P5？** P5 的 RGB 4:4:4 信号带宽需求极高，流媒体传输压力大；P8 的 YUV 4:2:2 能在保证画质的前提下大幅降低码率。Apple TV+ 是个例外——它只在 Apple TV 4K 设备上播放，硬件环境可控，所以直接用 P5。
+
+> **日常使用只需关注 Profile 7 和 Profile 8。** Profile 5 只有 Apple TV+ 等少数内容源使用，且需要 Apple TV 4K 才能完整体验。
 
 ---
 
