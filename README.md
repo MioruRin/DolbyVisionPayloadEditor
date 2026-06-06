@@ -28,10 +28,40 @@ This tool works with **any monitor that has Dolby Vision hardware support but di
 
 ---
 
+## Why Manufacturers Disable DV PC Mode
+
+### Dolby Vision Licensing is Tiered
+
+| Mode | Licensing Target | Fee |
+|------|------------------|-----|
+| Dolby Vision TV Mode | TV / projector manufacturers | Lower, base license |
+| Dolby Vision PC Mode | Monitor / PC manufacturers | **Additional fee, separate license required** |
+
+Many monitor manufacturers' strategy:
+- Hardware fully supports Dolby Vision (panel, processing chip both present)
+- Works normally when connected to PS5, Xbox, etc. ("TV mode" signal)
+- But **sets Bit 0 to 0 in EDID**, declaring "I am not a DV PC monitor"
+- This **saves on the Dolby Vision PC licensing fee**
+- After Windows reads EDID and thinks DV is not supported, the Dolby Vision PC option does not appear in Settings
+
+Some manufacturers advertise both modes because they licensed both:
+- "Dolby Vision" (TV mode, activated when connected to game consoles, etc.)
+- "Dolby Vision PC" (PC mode, an extra toggle appears under Windows HDR)
+
+**Those that only advertise "Dolby Vision" without "Dolby Vision PC" most likely did not purchase the PC license.**
+
+---
+
 ## How It Works
 
-Many monitor manufacturers disable Dolby Vision PC mode (Bit 0 of the DV Capability byte) in EDID to save on licensing fees, even though the hardware fully supports it. This tool:
+This tool modifies only **2 bytes** in your EDID:
 
+| Byte | Before | After | Notes |
+|------|--------|-------|-------|
+| DV Capability | `0x9E` | `0x9F` | Flip Bit 0 (DV over HDMI = 1) |
+| Block Checksum | Corresponding value | Recalculated | Sum of first 127 bytes of Block 1 |
+
+Workflow:
 1. **Exports** your current EDID from the Windows registry
 2. **Locates** the Dolby Vision VSDB using generic IEEE OUI detection (`46 D0 00`)
 3. **Flips Bit 0** of the DV Capability byte from `0` to `1`
@@ -94,18 +124,51 @@ This reads your current monitor's DV info from the registry.
 
 ---
 
-## Dolby Vision Capability Byte
+## Dolby Vision EDID Structure
 
-| Bit | Name | Description |
-|-----|------|-------------|
-| **0** | **DV over HDMI** | **PC mode key bit** — this tool flips it from 0 to 1 |
-| 1 | DV over MHL | Mobile High-Definition Link |
-| 2 | Backlight Control | Local dimming support |
-| 3 | Profile 8 | BL+RPU (Netflix, Disney+, etc.) |
-| 4 | Profile 7 | BL+FEL dual layer (4K UHD Blu-ray) |
-| 5 | Profile 5 | RGB 4:4:4 (Apple TV+) |
-| 6 | Low Latency DV | Gaming mode |
-| 7 | DV Version Report | Version reporting |
+### Where is DV Data in EDID?
+
+EDID (Extended Display Identification Data) is binary data that a monitor uses to report its capabilities. On Windows, it is stored in the registry:
+
+```
+HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<model>\<instance>\Device Parameters\EDID
+```
+
+Dolby Vision data is located in the CTA-861 Extension Block (Block 1 and beyond), within the Data Block Collection. It is identified by its IEEE OUI:
+
+- **Dolby IEEE OUI**: `0x000D046`
+- **Little-endian storage**: `46 D0 00`
+- After finding the OUI, the following **7 bytes** are the Dolby Vision Payload
+
+```
+46 D0 00 | 4D 0A 9F 58 98 AA 5C
+OUI(3B)  |   Payload(7B)
+```
+
+### DV Payload Structure (7 Bytes)
+
+| Byte | Offset | Example | Meaning |
+|------|--------|---------|---------|
+| Byte 0 | +0 | `0x4D` | Dolby Vision version |
+| Byte 1 | +1 | `0x0A` | Minimum backward-compatible version |
+| **Byte 2** | **+2** | **`0x9F`** | **DV Capability (this tool modifies this byte)** |
+| Byte 3 | +3 | `0x58` | Supported brightness info |
+| Byte 4-6 | +4~+6 | `98 AA 5C` | Reserved / vendor-specific |
+
+### DV Capability Byte Breakdown
+
+Using `0x9F = 10011111` as an example:
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| **0** | **DV over HDMI** | **Standard HDMI Dolby Vision signaling (PC mode key)** |
+| 1 | DV over MHL | MHL interface Dolby Vision |
+| 2 | Backlight Control | Backlight control (Local Dimming) |
+| 3 | Profile 8 | Profile 8 (BL+RPU, most common streaming) |
+| 4 | Profile 7 | Profile 7 (FEL full enhancement layer) |
+| 5 | Profile 5 | Profile 5 (RGB 12-bit lossless) |
+| 6 | Low Latency DV | Low-latency Dolby Vision (gaming) |
+| 7 | DV Version Report | Dolby Vision version reporting |
 
 ---
 
