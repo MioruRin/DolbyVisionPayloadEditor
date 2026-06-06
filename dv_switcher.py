@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 DolbyVisionPayloadEditor - Dolby Vision EDID Export & Patch Tool (Console)
@@ -158,9 +158,9 @@ def action_export():
         _, _, po = dv
         payload = edid[po:po + 7]
         parsed = parse_dv_payload(payload)
-        print(f"     DV Payload: {parsed["payload"]}", flush=True)
-        print(f"     DV Capability: {parsed["cap_hex"]} = {parsed["cap_bin"]}", flush=True)
-        dv_pc = "ON" if parsed["bits"][0] else "OFF"
+        print(f"     DV Payload: {parsed['payload']}", flush=True)
+        print(f"     DV Capability: {parsed['cap_hex']} = {parsed['cap_bin']}", flush=True)
+        dv_pc = "ON" if parsed['bits'][0] else "OFF"
         print(f"     DV PC Mode: {dv_pc}", flush=True)
     else:
         print("     [!] No Dolby Vision VSDB found.", flush=True)
@@ -185,11 +185,11 @@ def action_patch_file():
     payload = edid[po:po + 7]
     parsed = parse_dv_payload(payload)
     print(f"\n[+] Found Dolby Vision VSDB:", flush=True)
-    print(f"     Payload: {parsed["payload"]}", flush=True)
-    print(f"     Capability: {parsed["cap_hex"]} = {parsed["cap_bin"]}", flush=True)
-    dv_pc = "ON" if parsed["bits"][0] else "OFF"
+    print(f"     Payload: {parsed['payload']}", flush=True)
+    print(f"     Capability: {parsed['cap_hex']} = {parsed['cap_bin']}", flush=True)
+    dv_pc = "ON" if parsed['bits'][0] else "OFF"
     print(f"     DV PC Mode: {dv_pc}", flush=True)
-    if parsed["bits"][0]:
+    if parsed['bits'][0]:
         print("\n[*] DV PC mode is already enabled. No change needed.", flush=True)
         return
     old_cap = edid[po + 2]
@@ -218,8 +218,8 @@ def action_read():
     _, _, po = dv
     payload = edid[po:po + 7]
     parsed = parse_dv_payload(payload)
-    print(f"\nDV Payload: {parsed["payload"]}", flush=True)
-    print(f"DV Capability: {parsed["cap_hex"]} = {parsed["cap_bin"]}", flush=True)
+    print(f"\nDV Payload: {parsed['payload']}", flush=True)
+    print(f"DV Capability: {parsed['cap_hex']} = {parsed['cap_bin']}", flush=True)
     print(f"\nBit breakdown:", flush=True)
     bit_names = [
         "Bit 0: DV over HDMI (PC mode)",
@@ -232,7 +232,7 @@ def action_read():
         "Bit 7: DV Version Report",
     ]
     for i, name in enumerate(bit_names):
-        s = "ON" if parsed["bits"][i] else "OFF"
+        s = "ON" if parsed['bits'][i] else "OFF"
         print(f"  [{i}] {name}: {s}", flush=True)
 
 def show_menu():
